@@ -44,6 +44,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Project safety events into notifications and retry pending deliveries.
+	// The loop is deliberately independent of HTTP serving: delivery failures
+	// are retried with backoff and can never roll back an emergency stop or plan
+	// cancellation that has already been journaled.
+	go runtime.NotifyOutbox.Run(ctx, 2*time.Second)
 	server := &http.Server{
 		Addr: configuration.address, Handler: api.Router(runtime, configuration.webDirectory),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,

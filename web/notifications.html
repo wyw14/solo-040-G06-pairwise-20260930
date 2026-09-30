@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Notifications</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a><a aria-current="page" href="/notifications">Notifications</a></nav></header>
+<main><div class="page-title"><div><h1>Duty notifications</h1><div class="muted">Outbound emergency, cancellation and recovery alerts routed by chamber and severity</div></div><button id="refresh">Refresh</button></div>
+<div class="grid">
+<section class="panel wide"><h2>Pending delivery</h2><table><thead><tr><th>Severity</th><th>Chamber</th><th>Title</th><th>Receiver</th><th>Attempts</th><th>Next attempt</th><th>Source event</th><th></th></tr></thead><tbody id="pending"></tbody></table></section>
+<section class="panel wide"><h2>Delivery records</h2><table><thead><tr><th>Time</th><th>Receiver</th><th>Severity</th><th>Chamber</th><th>Title</th><th>Attempt</th><th>Result</th><th>Detail</th></tr></thead><tbody id="records"></tbody></table></section>
+<section class="panel wide"><h2>Duty receivers</h2>
+<form id="receiver-form">
+<div class="form-row"><div><label for="r-id">Receiver ID</label><input id="r-id" placeholder="ops-lead" required></div><div><label for="r-name">Name</label><input id="r-name" placeholder="Operations lead" required></div><div><label for="r-kind">Transport</label><select id="r-kind"><option value="log">log</option><option value="webhook">webhook</option></select></div></div>
+<div class="form-row"><div><label for="r-target">Webhook URL (log: leave empty)</label><input id="r-target" placeholder="https://duty.example/alert"></div><div><label for="r-severity">Minimum severity</label><select id="r-severity"><option value="notice">notice</option><option value="warning">warning</option><option value="critical">critical</option></select></div><div><label for="r-chambers">Chambers (comma separated, empty = all)</label><input id="r-chambers" placeholder="chamber-1,chamber-2"></div></div>
+<div class="form-row"><div><label>&nbsp;</label><button type="submit">Save receiver</button></div></div>
+<div class="message" id="receiver-message"></div>
+</form>
+<table><thead><tr><th>ID</th><th>Name</th><th>Transport</th><th>Target</th><th>Chambers</th><th>Min severity</th><th>Enabled</th></tr></thead><tbody id="receivers"></tbody></table>
+</section>
+</div><div class="message" id="message"></div></main>
+<script src="/assets/app.js"></script><script>
+const {api,setMessage,withBusy}=window.LockFlow;
+const pendingBody=document.querySelector('#pending');
+const recordsBody=document.querySelector('#records');
+const receiversBody=document.querySelector('#receivers');
+const message=document.querySelector('#message');
+const time=(v)=>v?new Date(v).toLocaleString():'-';
+const esc=(v)=>String(v??'').replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function loadPending(){
+  const items=await api('/api/notifications/pending');
+  pendingBody.innerHTML=items.map((n)=>`<tr><td><span class="status ${n.severity}">${n.severity}</span></td><td>${esc(n.chamber_id)}</td><td>${esc(n.title)}<div class="muted">${esc(n.summary)}</div></td><td>${esc(n.receiver_id)}</td><td>${n.attempts}/${n.max_attempts}</td><td>${time(n.next_attempt_at)}<div class="muted">${esc(n.last_error)}</div></td><td title="${esc(n.source_event_id)}">${esc(String(n.source_event_id).slice(0,8))}</td><td>${n.status==='failed'?`<button data-retry="${esc(n.id)}">Retry</button>`:''}</td></tr>`).join('')||'<tr><td colspan="8" class="muted">No notifications awaiting delivery</td></tr>';
+}
+async function loadRecords(){
+  const items=await api('/api/notifications/records?limit=100');
+  recordsBody.innerHTML=items.map((r)=>`<tr><td>${time(r.started_at)}</td><td>${esc(r.receiver_name||r.receiver_id)}</td><td><span class="status ${r.severity}">${r.severity}</span></td><td>${esc(r.chamber_id)}</td><td>${esc(r.title)}</td><td>${r.attempt}</td><td><span class="status ${r.status==='delivered'?'':'critical'}">${r.status}</span></td><td class="muted">${esc(r.detail)}</td></tr>`).join('')||'<tr><td colspan="8" class="muted">No delivery attempts recorded</td></tr>';
+}
+async function loadReceivers(){
+  const items=await api('/api/notification-receivers');
+  receiversBody.innerHTML=items.map((r)=>`<tr><td>${esc(r.id)}</td><td>${esc(r.name)}</td><td>${esc(r.kind)}</td><td class="muted">${esc(r.target)}</td><td>${(r.chambers||[]).map(esc).join(', ')||'all'}</td><td>${esc(r.min_severity)}</td><td><button data-enabled="${esc(r.id)}" data-value="${r.enabled?'false':'true'}">${r.enabled?'disable':'enable'}</button></td></tr>`).join('')||'<tr><td colspan="7" class="muted">No receivers configured</td></tr>';
+}
+async function loadAll(){await Promise.all([loadPending(),loadRecords(),loadReceivers()]);setMessage(message,'');}
+document.querySelector('#refresh').addEventListener('click',()=>withBusy(document.querySelector('#refresh'),loadAll).catch((e)=>setMessage(message,e.message)));
+pendingBody.addEventListener('click',async(event)=>{
+  const button=event.target.closest('button[data-retry]');if(!button)return;
+  try{await api(`/api/notifications/${button.dataset.retry}/retry`,{method:'POST'});await loadAll();}catch(e){setMessage(message,e.message);}
+});
+receiversBody.addEventListener('click',async(event)=>{
+  const button=event.target.closest('button[data-enabled]');if(!button)return;
+  try{await api(`/api/notification-receivers/${button.dataset.enabled}/enabled`,{method:'POST',body:JSON.stringify({enabled:button.dataset.value==='true'})});await loadAll();}catch(e){setMessage(message,e.message);}
+});
+document.querySelector('#receiver-form').addEventListener('submit',async(event)=>{
+  event.preventDefault();
+  const chambers=document.querySelector('#r-chambers').value.split(',').map((s)=>s.trim()).filter(Boolean);
+  const body={id:document.querySelector('#r-id').value.trim(),name:document.querySelector('#r-name').value.trim(),kind:document.querySelector('#r-kind').value,target:document.querySelector('#r-target').value.trim(),chambers:chambers,min_severity:document.querySelector('#r-severity').value,enabled:true};
+  const receiverMessage=document.querySelector('#receiver-message');
+  try{await api('/api/notification-receivers',{method:'PUT',body:JSON.stringify(body)});event.target.reset();setMessage(receiverMessage,'');await loadAll();}catch(e){setMessage(receiverMessage,e.message);}
+});
+loadAll().catch((e)=>setMessage(message,e.message));
+</script></body></html>

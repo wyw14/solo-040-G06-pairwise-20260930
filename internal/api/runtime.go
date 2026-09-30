@@ -13,6 +13,7 @@ import (
 	"github.com/wyw14/cry-96/internal/lease"
 	"github.com/wyw14/cry-96/internal/model"
 	"github.com/wyw14/cry-96/internal/monitor"
+	"github.com/wyw14/cry-96/internal/notify"
 	"github.com/wyw14/cry-96/internal/safety"
 	"github.com/wyw14/cry-96/internal/schedule"
 	"github.com/wyw14/cry-96/internal/signal"
@@ -43,6 +44,8 @@ type Runtime struct {
 	Incidents       *monitor.IncidentReview
 	Health          *monitor.HealthRegistry
 	Recovery        *cycle.Recovery
+	NotifyRoster    *notify.Roster
+	NotifyOutbox    *notify.Outbox
 	Chambers        []string
 	Now             func() time.Time
 }
@@ -93,7 +96,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
 	signalService.BindTransitLookup(cycleCoordinator)
 	replayer := journal.NewReplayer(store)
-	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
+	recovery := cycle.NewRecovery(replayer, cycleCoordinator, recorder)
 	if _, err := recovery.RestoreAll(ctx); err != nil {
 		return nil, err
 	}
@@ -106,6 +109,29 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 			health.Observe(chamberID, device, true, "telemetry current", now())
 		}
 	}
+	configStore, outboxStore, err := notify.NewRuntimeStores(dataDirectory)
+	if err != nil {
+		return nil, err
+	}
+	notifyRoster := notify.NewRoster(configStore, now)
+	if err := notifyRoster.Load(ctx); err != nil {
+		return nil, err
+	}
+	if len(notifyRoster.List()) == 0 {
+		// Seed a built-in local duty desk so safety events are observable before
+		// external webhooks are configured. Operators can disable or replace it.
+		if _, err := notifyRoster.Upsert(ctx, notify.Receiver{
+			ID: "duty-desk", Name: "Local duty desk", Kind: notify.ReceiverLog,
+			MinSeverity: notify.SeverityNotice, Enabled: true,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	sender := notify.NewRoutingSender(nil, nil)
+	notifyOutbox := notify.NewOutbox(outboxStore, notifyRoster, store, sender, nil, now)
+	if err := notifyOutbox.Load(ctx); err != nil {
+		return nil, err
+	}
 	return &Runtime{
 		Store: store, Recorder: recorder, GateState: gateState,
 		GateCommands: gateCommands, Gates: gateController,
@@ -116,6 +142,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
 		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
 		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
+		NotifyRoster: notifyRoster, NotifyOutbox: notifyOutbox,
 		Chambers: chambers, Now: now,
 	}, nil
 }
