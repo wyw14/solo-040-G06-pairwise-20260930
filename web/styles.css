@@ -52,6 +52,11 @@ th { color: #91a0a8; font-weight: 600; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #5bc0be; }
 .status.warning::before { background: #f2c14e; }
 .status.critical::before { background: #ef6f6c; }
+.status.notice::before { background: #6fa8dc; }
+.status.n-sent::before { background: #7bc47f; }
+.status.n-pending::before { background: #f2c14e; }
+.status.n-failed::before { background: #ef6f6c; }
+.status.n-dead::before { background: #b0564f; }
 .message { min-height: 22px; color: #f2c14e; font-size: 13px; margin-top: 10px; white-space: pre-wrap; }
 @media (max-width: 780px) {
   header { height: auto; padding: 14px 18px; align-items: flex-start; flex-direction: column; gap: 10px; }

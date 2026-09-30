@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/wyw14/cry-96/internal/admission"
@@ -13,6 +15,7 @@ import (
 	"github.com/wyw14/cry-96/internal/lease"
 	"github.com/wyw14/cry-96/internal/model"
 	"github.com/wyw14/cry-96/internal/monitor"
+	"github.com/wyw14/cry-96/internal/notify"
 	"github.com/wyw14/cry-96/internal/safety"
 	"github.com/wyw14/cry-96/internal/schedule"
 	"github.com/wyw14/cry-96/internal/signal"
@@ -20,31 +23,33 @@ import (
 
 // Runtime contains the long-lived component graph used by HTTP handlers.
 type Runtime struct {
-	Store           journal.Store
-	Recorder        *journal.Recorder
-	GateState       *gate.State
-	GateCommands    *gate.Commands
-	Gates           *gate.Controller
-	SignalStore     *signal.Store
-	SignalPublisher *signal.Publisher
-	Signals         *signal.Service
-	AdmissionQueue  *admission.Queue
-	Admission       *admission.Service
-	Planner         *schedule.Planner
-	Schedule        *schedule.Service
-	Hydraulics      *hydraulics.Controller
-	Interlocks      *interlock.Coordinator
-	Cycles          *cycle.Coordinator
-	CycleService    *cycle.Service
-	Leases          *lease.Service
-	LeaseSweeper    *lease.Sweeper
-	Safety          *safety.Service
-	Snapshot        *monitor.Snapshot
-	Incidents       *monitor.IncidentReview
-	Health          *monitor.HealthRegistry
-	Recovery        *cycle.Recovery
-	Chambers        []string
-	Now             func() time.Time
+	Store              journal.Store
+	Recorder           *journal.Recorder
+	GateState          *gate.State
+	GateCommands       *gate.Commands
+	Gates              *gate.Controller
+	SignalStore        *signal.Store
+	SignalPublisher    *signal.Publisher
+	Signals            *signal.Service
+	AdmissionQueue     *admission.Queue
+	Admission          *admission.Service
+	Planner            *schedule.Planner
+	Schedule           *schedule.Service
+	Hydraulics         *hydraulics.Controller
+	Interlocks         *interlock.Coordinator
+	Cycles             *cycle.Coordinator
+	CycleService       *cycle.Service
+	Leases             *lease.Service
+	LeaseSweeper       *lease.Sweeper
+	Safety             *safety.Service
+	Snapshot           *monitor.Snapshot
+	Incidents          *monitor.IncidentReview
+	Health             *monitor.HealthRegistry
+	Recovery           *cycle.Recovery
+	NotificationRoutes *notify.RouteRegistry
+	Notifications      *notify.Outbox
+	Chambers           []string
+	Now                func() time.Time
 }
 
 func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
@@ -92,11 +97,41 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	safetyCoordinator = safety.NewCoordinator(gateCommands, barrier, recorder, now)
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
 	signalService.BindTransitLookup(cycleCoordinator)
+
+	// Notification outbox: durable, deterministic envelopes routed per
+	// chamber/severity. It is subscribed before journal replay so recovery
+	// warnings are captured as well as live safety events.
+	notifyStore, err := notify.NewRuntimeStore(dataDirectory)
+	if err != nil {
+		return nil, err
+	}
+	notifyRoutes := notify.NewRouteRegistry()
+	for _, route := range defaultNotifyRoutes() {
+		if err := notifyRoutes.Upsert(route); err != nil {
+			return nil, err
+		}
+	}
+	dispatchers := map[notify.Channel]notify.Dispatcher{
+		notify.ChannelLog:     notify.NewLogDispatcher(slog.Default()),
+		notify.ChannelWebhook: notify.NewWebhookDispatcher(nil),
+		notify.ChannelNoop:    notify.NoopDispatcher,
+	}
+	notificationOutbox := notify.NewOutbox(notifyStore, notifyRoutes, dispatchers, now, notify.Config{
+		PumpInterval: time.Second, BaseBackoff: 5 * time.Second,
+		MaxBackoff: 5 * time.Minute,
+	})
+	recorder.Subscribe(notificationOutbox)
+
 	replayer := journal.NewReplayer(store)
-	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
+	recovery := cycle.NewRecovery(replayer, cycleCoordinator, recorder)
 	if _, err := recovery.RestoreAll(ctx); err != nil {
 		return nil, err
 	}
+	go func() {
+		if err := notificationOutbox.Run(ctx); err != nil {
+			slog.ErrorContext(ctx, "notification pump stopped", "error", err)
+		}
+	}()
 	health := monitor.NewHealthRegistry()
 	for _, chamberID := range chambers {
 		for _, device := range []model.DeviceKind{
@@ -116,6 +151,33 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
 		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
 		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
+		NotificationRoutes: notifyRoutes, Notifications: notificationOutbox,
 		Chambers: chambers, Now: now,
 	}, nil
+}
+
+// defaultNotifyRoutes seeds the on-call routing table. Each chamber has a duty
+// sink; critical events additionally escalate globally to a webhook when
+// LOCKFLOW_NOTIFY_WEBHOOK is configured, otherwise to the structured log.
+func defaultNotifyRoutes() []notify.Route {
+	channel := notify.ChannelLog
+	target := ""
+	if webhook := os.Getenv("LOCKFLOW_NOTIFY_WEBHOOK"); webhook != "" {
+		channel = notify.ChannelWebhook
+		target = webhook
+	}
+	return []notify.Route{
+		{
+			Name: "chamber-1-duty", Chambers: []string{"chamber-1"},
+			MinLevel: notify.SeverityWarning, Channel: notify.ChannelLog, Enabled: true,
+		},
+		{
+			Name: "chamber-2-duty", Chambers: []string{"chamber-2"},
+			MinLevel: notify.SeverityWarning, Channel: notify.ChannelLog, Enabled: true,
+		},
+		{
+			Name: "critical-escalation", MinLevel: notify.SeverityCritical,
+			Channel: channel, Target: target, Enabled: true,
+		},
+	}
 }

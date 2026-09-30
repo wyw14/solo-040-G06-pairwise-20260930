@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Notifications</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a><a aria-current="page" href="/notifications">Notifications</a></nav></header>
+<main><div class="page-title"><div><h1>Outbound notifications</h1><div class="muted">Duty events routed by chamber and severity · retryable outbox, original event id preserved</div></div><button id="refresh">Refresh</button></div>
+<section class="panel wide"><h2>Pending delivery <span class="muted" id="pending-count"></span></h2><table><thead><tr><th>Severity</th><th>Chamber</th><th>Event</th><th>Origin event</th><th>Route</th><th>Status</th><th>Attempts</th><th>Next try</th><th>Last error</th><th></th></tr></thead><tbody id="pending"></tbody></table></section>
+<section class="panel wide"><h2>Delivery ledger <span class="muted" id="delivery-count"></span></h2><table><thead><tr><th>Notification</th><th>Severity</th><th>Chamber</th><th>Event</th><th>Origin event</th><th>Route</th><th>Status</th><th>Attempts</th><th>Updated</th><th>History</th></tr></thead><tbody id="deliveries"></tbody></table></section>
+<section class="panel wide"><h2>Duty routes</h2><table><thead><tr><th>Name</th><th>Chambers</th><th>Min level</th><th>Channel</th><th>Target</th><th>Enabled</th></tr></thead><tbody id="routes"></tbody></table></section>
+<div class="message" id="message"></div></main>
+<script src="/assets/app.js"></script><script>
+const {api,setMessage,withBusy}=window.LockFlow;
+const pendingBody=document.querySelector('#pending');
+const deliveriesBody=document.querySelector('#deliveries');
+const routesBody=document.querySelector('#routes');
+const message=document.querySelector('#message');
+const fmt=(v)=>v?new Date(v).toLocaleString():'-';
+const short=(v)=>v?String(v).slice(0,8):'-';
+const dash=(v)=>((v===undefined||v===null||v==='')?'<span class="muted">-</span>':v);
+const esc=(s)=>String(s).replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function retry(id,button){await withBusy(button,async()=>{await api('/api/notify/'+id+'/retry',{method:'POST'});await load();});}
+
+function pendingRow(n){
+  return '<tr><td><span class="status '+n.severity+'">'+n.severity+'</span></td>'
+    +'<td>'+n.chamber_id+'</td><td>'+n.event_type+'</td>'
+    +'<td title="'+n.event_id+'">'+short(n.event_id)+'</td>'
+    +'<td>'+n.route_name+'</td><td><span class="status n-'+n.status+'">'+n.status+'</span></td>'
+    +'<td>'+n.attempts+'/'+n.max_attempts+'</td><td>'+fmt(n.not_before)+'</td>'
+    +'<td class="muted">'+dash(esc(n.last_error||''))+'</td>'
+    +'<td><button data-id="'+n.id+'" class="retry">Retry now</button></td></tr>';
+}
+
+function historyCell(history){
+  if(!history||!history.length)return '-';
+  return history.map((h)=>'#'+h.attempt+' '+h.status+(h.manual?' (manual)':'')+(h.error?': '+esc(h.error):'')).join('<br>');
+}
+
+function deliveryRow(n){
+  return '<tr><td title="'+n.id+'">'+short(n.id)+'</td>'
+    +'<td><span class="status '+n.severity+'">'+n.severity+'</span></td>'
+    +'<td>'+n.chamber_id+'</td><td>'+n.event_type+'</td>'
+    +'<td title="'+n.event_id+'">'+short(n.event_id)+'</td>'
+    +'<td>'+n.route_name+'</td><td><span class="status n-'+n.status+'">'+n.status+'</span></td>'
+    +'<td>'+n.attempts+'/'+n.max_attempts+'</td><td>'+fmt(n.updated_at)+'</td>'
+    +'<td class="muted">'+historyCell(n.history)+'</td></tr>';
+}
+
+function routeRow(r){
+  const chambers=(r.chambers&&r.chambers.length)?r.chambers.join(', '):'<span class="muted">all</span>';
+  const enabled=r.enabled?'yes':'<span class="muted">no</span>';
+  return '<tr><td>'+r.name+'</td><td>'+chambers+'</td>'
+    +'<td>'+r.min_level+'</td><td>'+r.channel+'</td>'
+    +'<td>'+dash(esc(r.target||''))+'</td><td>'+enabled+'</td></tr>';
+}
+
+async function load(){
+  const values=await Promise.all([
+    api('/api/notify/pending'),api('/api/notify/deliveries'),api('/api/notify/routes'),
+  ]);
+  const pending=values[0], deliveries=values[1], routes=values[2];
+  pendingBody.innerHTML=pending.count?pending.pending.map(pendingRow).join(''):'<tr><td colspan="10" class="muted">Nothing pending</td></tr>';
+  document.querySelector('#pending-count').textContent='('+pending.count+')';
+  deliveriesBody.innerHTML=deliveries.count?deliveries.deliveries.map(deliveryRow).join(''):'<tr><td colspan="10" class="muted">No deliveries yet</td></tr>';
+  document.querySelector('#delivery-count').textContent='('+deliveries.count+')';
+  routesBody.innerHTML=routes.routes.length?routes.routes.map(routeRow).join(''):'<tr><td colspan="6" class="muted">No routes configured</td></tr>';
+  setMessage(message,'');
+}
+document.addEventListener('click',(event)=>{
+  const button=event.target.closest('button.retry');
+  if(!button)return;
+  retry(button.dataset.id,button).catch((e)=>setMessage(message,e.message));
+});
+document.querySelector('#refresh').addEventListener('click',()=>load().catch((e)=>setMessage(message,e.message)));
+load().catch((e)=>setMessage(message,e.message));
+</script></body></html>

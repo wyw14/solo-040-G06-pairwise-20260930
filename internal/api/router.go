@@ -25,6 +25,7 @@ func Router(runtime *Runtime, webDirectory string) http.Handler {
 	router.Get("/chamber", pageHandler(webDirectory, "chamber.html"))
 	router.Get("/interlocks", pageHandler(webDirectory, "interlocks.html"))
 	router.Get("/incidents", pageHandler(webDirectory, "incidents.html"))
+	router.Get("/notifications", pageHandler(webDirectory, "notifications.html"))
 	router.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.Dir(webDirectory))))
 	router.Route("/api", func(api chi.Router) {
 		api.Get("/chambers", chambersHandler(runtime))
@@ -49,6 +50,11 @@ func Router(runtime *Runtime, webDirectory string) http.Handler {
 		api.Post("/leases/{vesselID}/heartbeat", heartbeatHandler(runtime))
 		api.Post("/leases/{vesselID}/reassign", reassignLeaseHandler(runtime))
 		api.Delete("/leases/{vesselID}", releaseLeaseHandler(runtime))
+		api.Get("/notify/pending", pendingNotificationsHandler(runtime))
+		api.Get("/notify/deliveries", deliveriesHandler(runtime))
+		api.Get("/notify/routes", notificationRoutesHandler(runtime))
+		api.Put("/notify/routes", upsertNotificationRouteHandler(runtime))
+		api.Post("/notify/{notificationID}/retry", retryNotificationHandler(runtime))
 	})
 	return router
 }

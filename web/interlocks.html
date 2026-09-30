@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow Interlocks</title><link rel="stylesheet" href="/assets/styles.css"></head>
-<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a aria-current="page" href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a></nav></header>
+<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a aria-current="page" href="/interlocks">Interlocks</a><a href="/incidents">Incidents</a><a href="/notifications">Notifications</a></nav></header>
 <main><div class="page-title"><div><h1>Interlock control</h1><div class="muted">Mutual exclusion and emergency equipment state</div></div></div><div class="grid" id="interlock-grid"></div><div class="message" id="message"></div></main>
 <script src="/assets/app.js"></script><script>
 const {api,setMessage,withBusy}=window.LockFlow; const host=document.querySelector('#interlock-grid'); const message=document.querySelector('#message');
